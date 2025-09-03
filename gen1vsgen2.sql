@@ -882,8 +882,7 @@ ORDER BY query_name, warehouse_generation;
 
 DROP WAREHOUSE IF EXISTS TEST_GEN1_MEDIUM;
 DROP WAREHOUSE IF EXISTS TEST_GEN2_MEDIUM;
-DROP DATABASE IF EXISTS GEN2_BENCHMARK_TEST;
-DROP DATABASE IF EXISTS TEST_GEN2;
+
 
 -- =================================================================
 -- BENCHMARK COMPLETE!
@@ -954,3 +953,6 @@ WHERE test_date = CURRENT_DATE() AND warehouse_name LIKE '%GEN2%' AND credits_co
 4. Overall Summary:
 [Run the "Gen2 vs Gen1 Overall Comparison" query above]
 */
+
+---DROP DATABASE IF EXISTS GEN2_BENCHMARK_TEST;
+---DROP DATABASE IF EXISTS TEST_GEN2;
