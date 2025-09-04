@@ -3,7 +3,7 @@
 -- Complete testing framework for comparing warehouse performance
 -- Updated with credit calculation fixes and comprehensive analysis
 -- =================================================================
-
+USE ROLE ACCOUNTADMIN;
 -- Step 0: Enable SNOWFLAKE_SAMPLE_DATA if not exists 
 -- ==================================================
 -- Create a database from the share.
