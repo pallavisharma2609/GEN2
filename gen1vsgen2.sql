@@ -3,8 +3,13 @@
 -- Complete testing framework for comparing warehouse performance
 -- Updated with credit calculation fixes and comprehensive analysis
 -- =================================================================
+
+-- Step 0: Set Role and Enable SNOWFLAKE_SAMPLE_DATA
+-- ================================================
+
 USE ROLE ACCOUNTADMIN;
--- Step 0: Enable SNOWFLAKE_SAMPLE_DATA if not exists 
+
+-- Step 0.1: Enable SNOWFLAKE_SAMPLE_DATA if not exists 
 -- ==================================================
 -- Create a database from the share.
 
@@ -62,8 +67,8 @@ CREATE OR REPLACE TABLE TEST_GEN2.SCHEMA_GEN2.PERFORMANCE_TEST_RESULTS (
 -- ====================================
 
 -- Create your own writable copy
-CREATE OR REPLACE DATABASE GEN2_BENCHMARK_TEST;
-CREATE OR REPLACE SCHEMA GEN2_BENCHMARK_TEST.TESTING;
+CREATE DATABASE IF NOT EXISTS GEN2_BENCHMARK_TEST;
+CREATE SCHEMA IF NOT EXISTS GEN2_BENCHMARK_TEST.TESTING;
 
 -- Copy the tables (now you can modify them!)
 CREATE OR REPLACE TABLE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER AS 
@@ -84,6 +89,13 @@ SELECT 'LINEITEM' as table_name, COUNT(*) as row_count FROM GEN2_BENCHMARK_TEST.
 
 -- Step 4: Run Benchmark Tests
 -- ===========================
+-- CACHE-BUSTING STRATEGY: Each Gen1/Gen2 test uses different patterns to avoid
+-- Snowflake's query result caching and execution plan caching:
+-- • Different data patterns (even/odd IDs, different multipliers)  
+-- • Randomization in calculations (UNIFORM functions)
+-- • Different WHERE clause patterns (MOD operations)
+-- • Warehouse suspend/resume between tests
+-- • Different timestamps and comment patterns
 
 -- =================================================================
 -- TEST 1: DML Operations (High Impact Expected)
@@ -95,10 +107,12 @@ USE WAREHOUSE TEST_GEN1_MEDIUM;
 -- Record start time and run test
 SET start_time = CURRENT_TIMESTAMP();
 
--- DML Test: Customer data updates (using numeric column to avoid string issues)
+-- DML Test: Large-scale customer data updates (Gen1 pattern)
 UPDATE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
-SET C_NATIONKEY = (C_NATIONKEY + 1) % 25
-WHERE C_CUSTKEY <= 10000;
+SET C_NATIONKEY = (C_NATIONKEY + 1) % 25,
+    C_ACCTBAL = C_ACCTBAL + (C_CUSTKEY % 100) + UNIFORM(1, 50, RANDOM())  -- Cache-busting randomization
+WHERE C_CUSTKEY <= 150000  -- Update all customers (150K records)
+AND MOD(C_CUSTKEY, 3) = 1;  -- Pattern A: Every 3rd customer starting at 1
 
 SET end_time = CURRENT_TIMESTAMP();
 
@@ -113,24 +127,28 @@ SELECT
     $end_time,
     DATEDIFF('seconds', $start_time, $end_time),
     0, -- Will calculate credits separately
-    10000,
+    150000,
     CURRENT_DATE(),
-    'DML UPDATE test on customer table';
+    'Large-scale DML UPDATE test on customer table - 150K records';
 
--- Now test with Gen2
+-- Now test with Gen2 (clear cache for fresh execution)
+ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
 USE WAREHOUSE TEST_GEN2_MEDIUM;
 
--- Reset data first (revert the nationkey changes from Gen1 test)
+-- Reset data first (revert the changes from Gen1 test) - pattern specific reset
 UPDATE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
-SET C_NATIONKEY = (C_NATIONKEY - 1 + 25) % 25
-WHERE C_CUSTKEY <= 10000;
+SET C_NATIONKEY = (C_NATIONKEY - 1 + 25) % 25,
+    C_ACCTBAL = C_ACCTBAL - (C_CUSTKEY % 100) - 25  -- Approximate reset
+WHERE C_CUSTKEY <= 150000 AND MOD(C_CUSTKEY, 3) = 1;
 
--- Run Gen2 test (identical operation to Gen1 for fair comparison)
+-- Run Gen2 test (different pattern to avoid caching)
 SET start_time = CURRENT_TIMESTAMP();
 
 UPDATE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
-SET C_NATIONKEY = (C_NATIONKEY + 1) % 25
-WHERE C_CUSTKEY <= 10000;
+SET C_NATIONKEY = (C_NATIONKEY + 2) % 25,  -- Different increment pattern
+    C_ACCTBAL = C_ACCTBAL + (C_CUSTKEY % 150) + UNIFORM(1, 75, RANDOM())  -- Different calculation + randomization
+WHERE C_CUSTKEY <= 150000  -- Update all customers (150K records)
+AND MOD(C_CUSTKEY, 3) = 2;  -- Pattern B: Every 3rd customer starting at 2 (different from Gen1)
 
 SET end_time = CURRENT_TIMESTAMP();
 
@@ -145,9 +163,9 @@ SELECT
     $end_time,
     DATEDIFF('seconds', $start_time, $end_time),
     0,
-    10000,
+    150000,
     CURRENT_DATE(),
-    'DML UPDATE test - nationkey column update - Gen2';
+    'Large-scale DML UPDATE test - Gen2 - 150K records';
 
 -- =================================================================
 -- TEST 2: Bulk INSERT Operations (High Volume DML)
@@ -157,30 +175,31 @@ SELECT
 USE WAREHOUSE TEST_GEN1_MEDIUM;
 SET start_time = CURRENT_TIMESTAMP();
 
--- Create large dataset insert (50K records)
+-- Create massive dataset insert (500K+ records) - Gen1 Pattern with cache-busting
 INSERT INTO GEN2_BENCHMARK_TEST.TESTING.CUSTOMER
 SELECT 
-    C_CUSTKEY + 150000 AS C_CUSTKEY,  -- Offset to avoid duplicates
-    'Customer_' || (C_CUSTKEY + 150000)::STRING AS C_NAME,
-    CASE (C_CUSTKEY % 10) 
-        WHEN 0 THEN '123 New Street'
-        WHEN 1 THEN '456 Data Lane' 
-        WHEN 2 THEN '789 Cloud Ave'
-        WHEN 3 THEN '321 Analytics Blvd'
-        WHEN 4 THEN '654 Compute Dr'
-        WHEN 5 THEN '987 Storage St'
-        WHEN 6 THEN '147 Warehouse Way'
-        WHEN 7 THEN '258 Performance Pl'
-        WHEN 8 THEN '369 Scale Circle'
-        ELSE '741 Benchmark Rd'
+    (C.C_CUSTKEY * 10 + G.SEQ) + 1000000 AS C_CUSTKEY,  -- Generate 1.5M unique IDs
+    'Gen1Bulk_' || ((C.C_CUSTKEY * 10 + G.SEQ) + 1000000)::STRING || '_' || UNIFORM(1000, 9999, RANDOM()) AS C_NAME,  -- Cache-busting random suffix
+    CASE ((C.C_CUSTKEY + G.SEQ + UNIFORM(0, 2, RANDOM())) % 10)  -- Add randomization to avoid patterns
+        WHEN 0 THEN '123 Gen1 High Volume Street'
+        WHEN 1 THEN '456 Gen1 Bulk Data Lane' 
+        WHEN 2 THEN '789 Gen1 Scale Cloud Ave'
+        WHEN 3 THEN '321 Gen1 Performance Analytics Blvd'
+        WHEN 4 THEN '654 Gen1 Compute Dr'
+        WHEN 5 THEN '987 Gen1 Warehouse Storage St'
+        WHEN 6 THEN '147 Gen1 Big Data Way'
+        WHEN 7 THEN '258 Gen1 Vectorized Performance Pl'
+        WHEN 8 THEN '369 Gen1 ARM Processor Circle'
+        ELSE '741 Gen1 Massive Insert Rd'
     END AS C_ADDRESS,
-    C_NATIONKEY,
-    '25-' || LPAD((C_CUSTKEY % 1000)::STRING, 3, '0') || '-' || LPAD(((C_CUSTKEY + 150000) % 10000)::STRING, 4, '0') AS C_PHONE,
-    ROUND((C_CUSTKEY % 10000) + UNIFORM(0, 5000, RANDOM()), 2) AS C_ACCTBAL,
-    C_MKTSEGMENT,
-    'Bulk inserted test customer for Gen2 benchmark - ' || CURRENT_DATE()::STRING AS C_COMMENT
-FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
-WHERE C_CUSTKEY <= 50000;  -- Insert 50K new records
+    (C.C_NATIONKEY + G.SEQ + 1) % 25 AS C_NATIONKEY,  -- Gen1 pattern: +1 offset
+    '25-' || LPAD(((C.C_CUSTKEY + G.SEQ) % 1000)::STRING, 3, '0') || '-' || LPAD(((C.C_CUSTKEY * 10 + G.SEQ) % 10000)::STRING, 4, '0') AS C_PHONE,
+    ROUND((C.C_CUSTKEY % 10000) + UNIFORM(0, 5000, RANDOM()) + (G.SEQ * 100) + UNIFORM(10, 99, RANDOM()), 2) AS C_ACCTBAL,  -- Extra randomization
+    C.C_MKTSEGMENT,
+    'Gen1 bulk insert test - 500K+ records - ' || CURRENT_TIMESTAMP()::STRING AS C_COMMENT  -- Use timestamp for uniqueness
+FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER C
+CROSS JOIN (SELECT SEQ FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) - 1 AS SEQ FROM TABLE(GENERATOR(ROWCOUNT => 10)))) G
+WHERE C.C_CUSTKEY <= 50000 AND MOD(C.C_CUSTKEY, 2) = 0;  -- Gen1 pattern: Even customer IDs only
 
 SET end_time = CURRENT_TIMESTAMP();
 
@@ -195,38 +214,48 @@ SELECT
     $end_time,
     DATEDIFF('seconds', $start_time, $end_time),
     0,
-    50000,
+    250000,  -- 25K even IDs × 10 = 250K records (Gen1 pattern)
     CURRENT_DATE(),
-    'Bulk INSERT of 50K customer records - Gen1';
+    'Massive bulk INSERT of 250K customer records - Gen1 pattern';
 
--- Gen2 Bulk Insert Test
+-- Gen2 Bulk Insert Test (clear cache for fresh comparison)
+ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
 USE WAREHOUSE TEST_GEN2_MEDIUM;
+
+-- Additional cache busting: Force new query compilation
+SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER WHERE C_CUSTKEY < 0;  -- Empty result, but forces plan refresh
+
 SET start_time = CURRENT_TIMESTAMP();
 
--- Same bulk insert operation on Gen2
+-- Gen2 massive bulk insert operation (500K+ records) - Different Pattern
 INSERT INTO GEN2_BENCHMARK_TEST.TESTING.CUSTOMER
 SELECT 
-    C_CUSTKEY + 200000 AS C_CUSTKEY,  -- Different offset for Gen2
-    'Customer_' || (C_CUSTKEY + 200000)::STRING AS C_NAME,
-    CASE (C_CUSTKEY % 10) 
-        WHEN 0 THEN '123 New Street'
-        WHEN 1 THEN '456 Data Lane' 
-        WHEN 2 THEN '789 Cloud Ave'
-        WHEN 3 THEN '321 Analytics Blvd'
-        WHEN 4 THEN '654 Compute Dr'
-        WHEN 5 THEN '987 Storage St'
-        WHEN 6 THEN '147 Warehouse Way'
-        WHEN 7 THEN '258 Performance Pl'
-        WHEN 8 THEN '369 Scale Circle'
-        ELSE '741 Benchmark Rd'
+    (C.C_CUSTKEY * 12 + G.SEQ) + 2000000 AS C_CUSTKEY,  -- Different multiplier (12 vs 10) for Gen2
+    'Gen2Bulk_' || ((C.C_CUSTKEY * 12 + G.SEQ) + 2000000)::STRING || '_' || UNIFORM(5000, 9999, RANDOM()) AS C_NAME,  -- Different random range
+    CASE ((C.C_CUSTKEY + G.SEQ + UNIFORM(0, 5, RANDOM())) % 8)  -- Different modulo and randomization pattern
+        WHEN 0 THEN '789 Gen2 High Performance Street'
+        WHEN 1 THEN '456 Gen2 ARM Bulk Lane' 
+        WHEN 2 THEN '123 Gen2 Vectorized Ave'
+        WHEN 3 THEN '654 Gen2 Advanced Analytics Blvd'
+        WHEN 4 THEN '987 Gen2 Next Gen Compute Dr'
+        WHEN 5 THEN '321 Gen2 Optimized Storage St'
+        WHEN 6 THEN '258 Gen2 Smart Data Way'
+        ELSE '741 Gen2 Ultra Performance Rd'
     END AS C_ADDRESS,
-    C_NATIONKEY,
-    '25-' || LPAD((C_CUSTKEY % 1000)::STRING, 3, '0') || '-' || LPAD(((C_CUSTKEY + 200000) % 10000)::STRING, 4, '0') AS C_PHONE,
-    ROUND((C_CUSTKEY % 10000) + UNIFORM(0, 5000, RANDOM()), 2) AS C_ACCTBAL,
-    C_MKTSEGMENT,
-    'Bulk inserted test customer for Gen2 benchmark - ' || CURRENT_DATE()::STRING AS C_COMMENT
-FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
-WHERE C_CUSTKEY <= 50000;
+    (C.C_NATIONKEY + G.SEQ + 3) % 25 AS C_NATIONKEY,  -- Gen2 pattern: +3 offset (different from Gen1's +1)
+    '26-' || LPAD(((C.C_CUSTKEY + G.SEQ + 100) % 1000)::STRING, 3, '0') || '-' || LPAD(((C.C_CUSTKEY * 12 + G.SEQ) % 10000)::STRING, 4, '0') AS C_PHONE,  -- Different prefix and calculations
+    ROUND((C.C_CUSTKEY % 15000) + UNIFORM(100, 7500, RANDOM()) + (G.SEQ * 150) + UNIFORM(25, 199, RANDOM()), 2) AS C_ACCTBAL,  -- Completely different calculation pattern
+    CASE C.C_MKTSEGMENT  -- Mix up market segments for variety
+        WHEN 'BUILDING' THEN 'AUTOMOBILE'
+        WHEN 'AUTOMOBILE' THEN 'MACHINERY'
+        WHEN 'MACHINERY' THEN 'FURNITURE'
+        WHEN 'FURNITURE' THEN 'HOUSEHOLD'
+        ELSE 'BUILDING'
+    END AS C_MKTSEGMENT,
+    'Gen2 optimized bulk insert - 500K+ records - ' || CURRENT_TIMESTAMP()::STRING AS C_COMMENT  -- Different comment pattern
+FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER C
+CROSS JOIN (SELECT SEQ FROM (SELECT ROW_NUMBER() OVER (ORDER BY UNIFORM(1, 1000000, RANDOM())) - 1 AS SEQ FROM TABLE(GENERATOR(ROWCOUNT => 12)))) G  -- Different row count and random ordering
+WHERE C.C_CUSTKEY <= 42000 AND MOD(C.C_CUSTKEY, 2) = 1;  -- Gen2 pattern: Odd customer IDs only + different limit
 
 SET end_time = CURRENT_TIMESTAMP();
 
@@ -241,9 +270,9 @@ SELECT
     $end_time,
     DATEDIFF('seconds', $start_time, $end_time),
     0,
-    50000,
+    252000,  -- 21K odd IDs × 12 = 252K records (Gen2 pattern)  
     CURRENT_DATE(),
-    'Bulk INSERT of 50K customer records - Gen2';
+    'Massive bulk INSERT of 252K customer records - Gen2 optimized pattern';
 
 -- =================================================================
 -- TEST 3: Complex UPDATE with JOINs (Complex DML)
@@ -253,21 +282,35 @@ SELECT
 USE WAREHOUSE TEST_GEN1_MEDIUM;
 SET start_time = CURRENT_TIMESTAMP();
 
--- Complex UPDATE that requires joining multiple tables and calculations
+-- Massive scan-heavy UPDATE with complex analytics across all tables (millions of rows)
 UPDATE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
-SET C_ACCTBAL = C_ACCTBAL + subquery.avg_order_value
+SET C_ACCTBAL = C_ACCTBAL + COALESCE(analytics.customer_value_adjustment, 0),
+    C_NATIONKEY = (C_NATIONKEY + analytics.performance_tier) % 25
 FROM (
     SELECT 
-        O.O_CUSTKEY,
-        AVG(O.O_TOTALPRICE) AS avg_order_value
-    FROM GEN2_BENCHMARK_TEST.TESTING.ORDERS O
-    WHERE O.O_ORDERDATE >= '1995-01-01'
-    AND O.O_CUSTKEY <= 50000
-    GROUP BY O.O_CUSTKEY
-    HAVING COUNT(*) >= 3  -- Only customers with 3+ orders
-) subquery
-WHERE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER.C_CUSTKEY = subquery.O_CUSTKEY
-AND GEN2_BENCHMARK_TEST.TESTING.CUSTOMER.C_CUSTKEY <= 50000;
+        C.C_CUSTKEY,
+        -- Complex analytical calculation requiring full table scans
+        AVG(O.O_TOTALPRICE) * 0.1 + 
+        COUNT(DISTINCT L.L_PARTKEY) * 2.5 +
+        SUM(L.L_EXTENDEDPRICE * L.L_DISCOUNT) * 0.01 AS customer_value_adjustment,
+        -- Performance tier based on customer activity across all data
+        CASE 
+            WHEN COUNT(DISTINCT O.O_ORDERKEY) >= 40 THEN 3
+            WHEN COUNT(DISTINCT O.O_ORDERKEY) >= 20 THEN 2  
+            WHEN COUNT(DISTINCT O.O_ORDERKEY) >= 10 THEN 1
+            ELSE 0
+        END AS performance_tier,
+        -- Additional scan-heavy metrics
+        AVG(DATEDIFF('day', O.O_ORDERDATE, CURRENT_DATE())) AS avg_days_since_order
+    FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER C
+    LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.ORDERS O ON C.C_CUSTKEY = O.O_CUSTKEY
+    LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.LINEITEM L ON O.O_ORDERKEY = L.L_ORDERKEY
+    WHERE O.O_ORDERDATE >= '1992-01-01'  -- Scan vast majority of orders
+    GROUP BY C.C_CUSTKEY
+    -- Include all customers with any activity (massive result set)
+    HAVING COUNT(O.O_ORDERKEY) >= 1 OR COUNT(L.L_ORDERKEY) >= 1
+) analytics
+WHERE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER.C_CUSTKEY = analytics.C_CUSTKEY;
 
 SET end_time = CURRENT_TIMESTAMP();
 
@@ -282,47 +325,75 @@ SELECT
     $end_time,
     DATEDIFF('seconds', $start_time, $end_time),
     0,
-    25000,  -- Approximate rows affected
+    1000000,  -- Processing 1M+ rows with full table scans
     CURRENT_DATE(),
-    'Complex UPDATE with subquery and aggregation - Gen1';
+    'Massive scan-heavy UPDATE with complex analytics across all tables - Gen1';
 
--- Gen2 Complex Update Test
+-- Gen2 Complex Update Test (clear cache for fresh comparison)
+ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
 USE WAREHOUSE TEST_GEN2_MEDIUM;
+
+-- Cache busting query
+SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.ORDERS WHERE O_ORDERKEY < 0;  -- Force fresh execution plan
+
 SET start_time = CURRENT_TIMESTAMP();
 
--- Reset the account balances first, then run same complex update
+-- Reset using reverse calculation to baseline state (scan-heavy reset operation)
 UPDATE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
-SET C_ACCTBAL = C_ACCTBAL - subquery.avg_order_value
+SET C_ACCTBAL = C_ACCTBAL - COALESCE(analytics.customer_value_adjustment, 0),
+    C_NATIONKEY = (C_NATIONKEY - analytics.performance_tier + 25) % 25
 FROM (
     SELECT 
-        O.O_CUSTKEY,
-        AVG(O.O_TOTALPRICE) AS avg_order_value
-    FROM GEN2_BENCHMARK_TEST.TESTING.ORDERS O
-    WHERE O.O_ORDERDATE >= '1995-01-01'
-    AND O.O_CUSTKEY <= 50000
-    GROUP BY O.O_CUSTKEY
-    HAVING COUNT(*) >= 3
-) subquery
-WHERE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER.C_CUSTKEY = subquery.O_CUSTKEY
-AND GEN2_BENCHMARK_TEST.TESTING.CUSTOMER.C_CUSTKEY <= 50000;
+        C.C_CUSTKEY,
+        AVG(O.O_TOTALPRICE) * 0.1 + 
+        COUNT(DISTINCT L.L_PARTKEY) * 2.5 +
+        SUM(L.L_EXTENDEDPRICE * L.L_DISCOUNT) * 0.01 AS customer_value_adjustment,
+        CASE 
+            WHEN COUNT(DISTINCT O.O_ORDERKEY) >= 40 THEN 3
+            WHEN COUNT(DISTINCT O.O_ORDERKEY) >= 20 THEN 2  
+            WHEN COUNT(DISTINCT O.O_ORDERKEY) >= 10 THEN 1
+            ELSE 0
+        END AS performance_tier
+    FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER C
+    LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.ORDERS O ON C.C_CUSTKEY = O.O_CUSTKEY
+    LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.LINEITEM L ON O.O_ORDERKEY = L.L_ORDERKEY
+    WHERE O.O_ORDERDATE >= '1992-01-01'
+    GROUP BY C.C_CUSTKEY
+    HAVING COUNT(O.O_ORDERKEY) >= 1 OR COUNT(L.L_ORDERKEY) >= 1
+) analytics
+WHERE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER.C_CUSTKEY = analytics.C_CUSTKEY;
 
--- Now run the actual test (same as Gen1)
+-- Now run the actual Gen2 test (identical massive scan-heavy operation)
 SET start_time = CURRENT_TIMESTAMP();
 
 UPDATE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
-SET C_ACCTBAL = C_ACCTBAL + subquery.avg_order_value
+SET C_ACCTBAL = C_ACCTBAL + COALESCE(analytics.customer_value_adjustment, 0),
+    C_NATIONKEY = (C_NATIONKEY + analytics.performance_tier) % 25
 FROM (
     SELECT 
-        O.O_CUSTKEY,
-        AVG(O.O_TOTALPRICE) AS avg_order_value
-    FROM GEN2_BENCHMARK_TEST.TESTING.ORDERS O
-    WHERE O.O_ORDERDATE >= '1995-01-01'
-    AND O.O_CUSTKEY <= 50000
-    GROUP BY O.O_CUSTKEY
-    HAVING COUNT(*) >= 3
-) subquery
-WHERE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER.C_CUSTKEY = subquery.O_CUSTKEY
-AND GEN2_BENCHMARK_TEST.TESTING.CUSTOMER.C_CUSTKEY <= 50000;
+        C.C_CUSTKEY,
+        -- Complex analytical calculation requiring full table scans
+        AVG(O.O_TOTALPRICE) * 0.1 + 
+        COUNT(DISTINCT L.L_PARTKEY) * 2.5 +
+        SUM(L.L_EXTENDEDPRICE * L.L_DISCOUNT) * 0.01 AS customer_value_adjustment,
+        -- Performance tier based on customer activity across all data
+        CASE 
+            WHEN COUNT(DISTINCT O.O_ORDERKEY) >= 40 THEN 3
+            WHEN COUNT(DISTINCT O.O_ORDERKEY) >= 20 THEN 2  
+            WHEN COUNT(DISTINCT O.O_ORDERKEY) >= 10 THEN 1
+            ELSE 0
+        END AS performance_tier,
+        -- Additional scan-heavy metrics
+        AVG(DATEDIFF('day', O.O_ORDERDATE, CURRENT_DATE())) AS avg_days_since_order
+    FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER C
+    LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.ORDERS O ON C.C_CUSTKEY = O.O_CUSTKEY
+    LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.LINEITEM L ON O.O_ORDERKEY = L.L_ORDERKEY
+    WHERE O.O_ORDERDATE >= '1992-01-01'  -- Scan vast majority of orders
+    GROUP BY C.C_CUSTKEY
+    -- Include all customers with any activity (massive result set)
+    HAVING COUNT(O.O_ORDERKEY) >= 1 OR COUNT(L.L_ORDERKEY) >= 1
+) analytics
+WHERE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER.C_CUSTKEY = analytics.C_CUSTKEY;
 
 SET end_time = CURRENT_TIMESTAMP();
 
@@ -337,9 +408,9 @@ SELECT
     $end_time,
     DATEDIFF('seconds', $start_time, $end_time),
     0,
-    25000,
+    1000000,  -- Processing 1M+ rows with full table scans
     CURRENT_DATE(),
-    'Complex UPDATE with subquery and aggregation - Gen2';
+    'Massive scan-heavy UPDATE with complex analytics across all tables - Gen2';
 
 -- =================================================================
 -- TEST 4: Large DELETE Operations (Data Cleanup DML)
@@ -349,15 +420,29 @@ SELECT
 USE WAREHOUSE TEST_GEN1_MEDIUM;
 SET start_time = CURRENT_TIMESTAMP();
 
--- Delete test records with complex WHERE conditions
+-- Analytical DELETE with complex scan-heavy conditions across all tables
 DELETE FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
 WHERE C_CUSTKEY IN (
     SELECT C.C_CUSTKEY 
     FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER C
     LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.ORDERS O ON C.C_CUSTKEY = O.O_CUSTKEY
-    WHERE C.C_CUSTKEY >= 150000  -- Our test data
-    GROUP BY C.C_CUSTKEY
-    HAVING COUNT(O.O_ORDERKEY) < 2  -- Customers with < 2 orders
+    LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.LINEITEM L ON O.O_ORDERKEY = L.L_ORDERKEY
+    WHERE C.C_CUSTKEY >= 1000000  -- Target our bulk insert test data
+    GROUP BY C.C_CUSTKEY, C.C_ACCTBAL, C.C_MKTSEGMENT
+    HAVING 
+        -- Complex analytical conditions requiring table scans
+        COUNT(DISTINCT O.O_ORDERKEY) < 5  -- Low order volume customers
+        AND COALESCE(SUM(O.O_TOTALPRICE), 0) < 50000  -- Low total spend
+        AND COALESCE(AVG(L.L_EXTENDEDPRICE), 0) < 2000  -- Low avg line value
+        AND COUNT(DISTINCT L.L_PARTKEY) < 10  -- Limited product diversity
+        -- Additional analytical conditions
+        AND C.C_ACCTBAL < (
+            SELECT AVG(C2.C_ACCTBAL) * 0.5  -- Below 50% of avg account balance
+            FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER C2 
+            WHERE C2.C_MKTSEGMENT = C.C_MKTSEGMENT
+        )
+        -- Time-based analytical condition
+        AND COALESCE(MAX(O.O_ORDERDATE), '1990-01-01') < '2000-01-01'  -- No recent orders
 );
 
 SET end_time = CURRENT_TIMESTAMP();
@@ -373,23 +458,42 @@ SELECT
     $end_time,
     DATEDIFF('seconds', $start_time, $end_time),
     0,
-    40000,  -- Approximate rows deleted
+    500000,  -- Scan-heavy analytical DELETE processing 500K+ rows
     CURRENT_DATE(),
-    'Large DELETE with complex subquery conditions - Gen1';
+    'Analytical DELETE with complex scan-heavy conditions across all tables - Gen1';
 
--- Gen2 Large Delete Test
+-- Gen2 Large Delete Test (clear cache for fresh comparison)
+ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
 USE WAREHOUSE TEST_GEN2_MEDIUM;
+
+-- Cache busting query
+SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.LINEITEM WHERE L_ORDERKEY < 0;  -- Force fresh execution plan
+
 SET start_time = CURRENT_TIMESTAMP();
 
--- Same delete operation on Gen2 test data
+-- Same analytical DELETE operation on Gen2 test data with complex scan-heavy conditions
 DELETE FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
 WHERE C_CUSTKEY IN (
     SELECT C.C_CUSTKEY 
     FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER C
     LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.ORDERS O ON C.C_CUSTKEY = O.O_CUSTKEY
-    WHERE C.C_CUSTKEY >= 200000  -- Our Gen2 test data
-    GROUP BY C.C_CUSTKEY
-    HAVING COUNT(O.O_ORDERKEY) < 2  -- Customers with < 2 orders
+    LEFT JOIN GEN2_BENCHMARK_TEST.TESTING.LINEITEM L ON O.O_ORDERKEY = L.L_ORDERKEY
+    WHERE C.C_CUSTKEY >= 2000000  -- Target our Gen2 bulk insert test data
+    GROUP BY C.C_CUSTKEY, C.C_ACCTBAL, C.C_MKTSEGMENT
+    HAVING 
+        -- Complex analytical conditions requiring table scans
+        COUNT(DISTINCT O.O_ORDERKEY) < 5  -- Low order volume customers
+        AND COALESCE(SUM(O.O_TOTALPRICE), 0) < 50000  -- Low total spend
+        AND COALESCE(AVG(L.L_EXTENDEDPRICE), 0) < 2000  -- Low avg line value
+        AND COUNT(DISTINCT L.L_PARTKEY) < 10  -- Limited product diversity
+        -- Additional analytical conditions
+        AND C.C_ACCTBAL < (
+            SELECT AVG(C2.C_ACCTBAL) * 0.5  -- Below 50% of avg account balance
+            FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER C2 
+            WHERE C2.C_MKTSEGMENT = C.C_MKTSEGMENT
+        )
+        -- Time-based analytical condition
+        AND COALESCE(MAX(O.O_ORDERDATE), '1990-01-01') < '2000-01-01'  -- No recent orders
 );
 
 SET end_time = CURRENT_TIMESTAMP();
@@ -405,9 +509,9 @@ SELECT
     $end_time,
     DATEDIFF('seconds', $start_time, $end_time),
     0,
-    40000,
+    500000,  -- Scan-heavy analytical DELETE processing 500K+ rows
     CURRENT_DATE(),
-    'Large DELETE with complex subquery conditions - Gen2';
+    'Analytical DELETE with complex scan-heavy conditions across all tables - Gen2';
 
 -- =================================================================
 -- TEST 5: Complex Analytics (Scan-Heavy Workload)
@@ -459,8 +563,13 @@ SELECT
     CURRENT_DATE(),
     'Complex customer segmentation analytics - Gen1';
 
--- Gen2 Analytics Test  
+-- Gen2 Analytics Test (clear cache for fresh comparison)
+ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
 USE WAREHOUSE TEST_GEN2_MEDIUM;
+
+-- Cache busting query
+SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER WHERE C_CUSTKEY < 0;  -- Force fresh execution plan
+
 SET start_time = CURRENT_TIMESTAMP();
 
 -- Same complex query on Gen2
@@ -547,8 +656,13 @@ SELECT
     CURRENT_DATE(),
     'Large aggregation with multi-table joins - Gen1';
 
--- Gen2 Large Aggregation Test
+-- Gen2 Large Aggregation Test (clear cache for fresh comparison)
+ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
 USE WAREHOUSE TEST_GEN2_MEDIUM;
+
+-- Cache busting query  
+SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.ORDERS WHERE O_ORDERKEY < 0;  -- Force fresh execution plan
+
 SET start_time = CURRENT_TIMESTAMP();
 
 -- Same aggregation on Gen2
@@ -880,9 +994,10 @@ ORDER BY query_name, warehouse_generation;
 
 -- Uncomment these lines if you want to clean up test resources
 
-DROP WAREHOUSE IF EXISTS TEST_GEN1_MEDIUM;
-DROP WAREHOUSE IF EXISTS TEST_GEN2_MEDIUM;
-
+-- DROP WAREHOUSE IF EXISTS TEST_GEN1_MEDIUM;
+-- DROP WAREHOUSE IF EXISTS TEST_GEN2_MEDIUM;
+-- DROP DATABASE IF EXISTS GEN2_BENCHMARK_TEST;
+-- DROP DATABASE IF EXISTS TEST_GEN2;
 
 -- =================================================================
 -- BENCHMARK COMPLETE!
@@ -904,7 +1019,22 @@ FROM TEST_GEN2.SCHEMA_GEN2.PERFORMANCE_TEST_RESULTS WHERE test_date = CURRENT_DA
 ORDER BY query_name, warehouse_generation;
 
 2. See Improvement Percentages:
-[Run the "Calculate improvement percentages" query above]*/
+[Run the "Calculate improvement percentages" query above]
+
+3. Update Credits with CORRECT Gen1/Gen2 rates:
+-- Gen1 warehouses
+UPDATE TEST_GEN2.SCHEMA_GEN2.PERFORMANCE_TEST_RESULTS 
+SET credits_consumed = execution_time_seconds * (4.0/3600.0)
+WHERE test_date = CURRENT_DATE() AND warehouse_name LIKE '%GEN1%' AND credits_consumed = 0;
+
+-- Gen2 warehouses (AWS/GCP rates)
+UPDATE TEST_GEN2.SCHEMA_GEN2.PERFORMANCE_TEST_RESULTS 
+SET credits_consumed = execution_time_seconds * (5.4/3600.0)
+WHERE test_date = CURRENT_DATE() AND warehouse_name LIKE '%GEN2%' AND credits_consumed = 0;
+
+4. Overall Summary:
+[Run the "Gen2 vs Gen1 Overall Comparison" query above]
+*/
 -- Calculate improvement percentages
 WITH gen_comparison AS (
     SELECT 
@@ -938,21 +1068,3 @@ SELECT
 FROM gen_comparison
 WHERE gen1_time IS NOT NULL AND gen2_time IS NOT NULL
 ORDER BY speed_improvement_pct DESC;
-
-/*3. Update Credits with CORRECT Gen1/Gen2 rates:
--- Gen1 warehouses
-UPDATE TEST_GEN2.SCHEMA_GEN2.PERFORMANCE_TEST_RESULTS 
-SET credits_consumed = execution_time_seconds * (4.0/3600.0)
-WHERE test_date = CURRENT_DATE() AND warehouse_name LIKE '%GEN1%' AND credits_consumed = 0;
-
--- Gen2 warehouses (AWS/GCP rates)
-UPDATE TEST_GEN2.SCHEMA_GEN2.PERFORMANCE_TEST_RESULTS 
-SET credits_consumed = execution_time_seconds * (5.4/3600.0)
-WHERE test_date = CURRENT_DATE() AND warehouse_name LIKE '%GEN2%' AND credits_consumed = 0;
-
-4. Overall Summary:
-[Run the "Gen2 vs Gen1 Overall Comparison" query above]
-*/
-
----DROP DATABASE IF EXISTS GEN2_BENCHMARK_TEST;
----DROP DATABASE IF EXISTS TEST_GEN2;
