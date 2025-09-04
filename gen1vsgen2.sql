@@ -1079,3 +1079,36 @@ WHERE test_date = CURRENT_DATE() AND warehouse_name LIKE '%GEN2%' AND credits_co
 4. Overall Summary:
 [Run the "Gen2 vs Gen1 Overall Comparison" query above]
 */
+-- Calculate improvement percentages
+WITH gen_comparison AS (
+    SELECT 
+        query_name,
+        MAX(CASE WHEN warehouse_generation = 'GEN1' THEN execution_time_seconds END) AS gen1_time,
+        MAX(CASE WHEN warehouse_generation = 'GEN2' THEN execution_time_seconds END) AS gen2_time,
+        MAX(CASE WHEN warehouse_generation = 'GEN1' THEN credits_consumed END) AS gen1_credits,
+        MAX(CASE WHEN warehouse_generation = 'GEN2' THEN credits_consumed END) AS gen2_credits
+    FROM TEST_GEN2.SCHEMA_GEN2.PERFORMANCE_TEST_RESULTS
+    WHERE test_date = CURRENT_DATE()
+    GROUP BY query_name
+)
+SELECT 
+    query_name,
+    gen1_time,
+    gen2_time,
+    ROUND(((gen1_time - gen2_time) / NULLIF(gen1_time, 0) * 100), 1) AS speed_improvement_pct,
+    ROUND(gen1_credits, 6) AS gen1_credits,
+    ROUND(gen2_credits, 6) AS gen2_credits,
+    ROUND(((gen1_credits - gen2_credits) / NULLIF(gen1_credits, 0) * 100), 1) AS cost_reduction_pct,
+    CASE 
+        WHEN gen2_time < gen1_time THEN '✅ Gen2 Faster'
+        WHEN gen2_time > gen1_time THEN '❌ Gen1 Faster'
+        ELSE '🔄 Same Speed'
+    END AS performance_winner,
+    CASE 
+        WHEN gen2_credits < gen1_credits THEN '✅ Gen2 Cheaper'
+        WHEN gen2_credits > gen1_credits THEN '❌ Gen1 Cheaper'
+        ELSE '🔄 Same Cost'
+    END AS cost_winner
+FROM gen_comparison
+WHERE gen1_time IS NOT NULL AND gen2_time IS NOT NULL
+ORDER BY speed_improvement_pct DESC;
