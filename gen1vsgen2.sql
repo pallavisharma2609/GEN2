@@ -89,13 +89,13 @@ SELECT 'LINEITEM' as table_name, COUNT(*) as row_count FROM GEN2_BENCHMARK_TEST.
 
 -- Step 4: Run Benchmark Tests
 -- ===========================
--- CACHE-BUSTING STRATEGY: Each Gen1/Gen2 test uses different patterns to avoid
--- Snowflake's query result caching and execution plan caching:
+-- CACHE-BUSTING STRATEGY: Ensures accurate Gen1 vs Gen2 performance comparison:
+-- • USE_CACHED_RESULT = FALSE: Disables Snowflake's result caching
+-- • Unique QUERY_TAG per test: Forces fresh execution plans
 -- • Different data patterns (even/odd IDs, different multipliers)  
 -- • Randomization in calculations (UNIFORM functions)
 -- • Different WHERE clause patterns (MOD operations)
--- • Warehouse suspend/resume between tests
--- • Different timestamps and comment patterns
+-- • Unique timestamps and comment patterns for each test
 
 -- =================================================================
 -- TEST 1: DML Operations (High Impact Expected)
@@ -103,6 +103,11 @@ SELECT 'LINEITEM' as table_name, COUNT(*) as row_count FROM GEN2_BENCHMARK_TEST.
 
 -- Switch to Gen1 warehouse
 USE WAREHOUSE TEST_GEN1_MEDIUM;
+
+-- Disable all caching for accurate Gen1 baseline measurement  
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen1 = 'GEN1_BENCHMARK_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen1;
 
 -- Record start time and run test
 SET start_time = CURRENT_TIMESTAMP();
@@ -131,9 +136,13 @@ SELECT
     CURRENT_DATE(),
     'Large-scale DML UPDATE test on customer table - 150K records';
 
--- Now test with Gen2 (clear cache for fresh execution)
-ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
+-- Now test with Gen2 (disable caching for fresh execution)
 USE WAREHOUSE TEST_GEN2_MEDIUM;
+
+-- Disable all caching for accurate Gen2 performance measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen2 = 'GEN2_BENCHMARK_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen2;
 
 -- Reset data first (revert the changes from Gen1 test) - pattern specific reset
 UPDATE GEN2_BENCHMARK_TEST.TESTING.CUSTOMER 
@@ -173,6 +182,12 @@ SELECT
 
 -- Gen1 Bulk Insert Test
 USE WAREHOUSE TEST_GEN1_MEDIUM;
+
+-- Disable all caching for accurate Gen1 baseline measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen1_bulk = 'GEN1_BULK_INSERT_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen1_bulk;
+
 SET start_time = CURRENT_TIMESTAMP();
 
 -- Create massive dataset insert (500K+ records) - Gen1 Pattern with cache-busting
@@ -218,12 +233,13 @@ SELECT
     CURRENT_DATE(),
     'Massive bulk INSERT of 250K customer records - Gen1 pattern';
 
--- Gen2 Bulk Insert Test (clear cache for fresh comparison)
-ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
+-- Gen2 Bulk Insert Test (disable caching for fresh comparison)
 USE WAREHOUSE TEST_GEN2_MEDIUM;
 
--- Additional cache busting: Force new query compilation
-SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER WHERE C_CUSTKEY < 0;  -- Empty result, but forces plan refresh
+-- Disable all caching for accurate Gen2 performance measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen2_bulk = 'GEN2_BULK_INSERT_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen2_bulk;
 
 SET start_time = CURRENT_TIMESTAMP();
 
@@ -280,6 +296,12 @@ SELECT
 
 -- Gen1 Complex Update Test
 USE WAREHOUSE TEST_GEN1_MEDIUM;
+
+-- Disable all caching for accurate Gen1 baseline measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen1_update = 'GEN1_COMPLEX_UPDATE_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen1_update;
+
 SET start_time = CURRENT_TIMESTAMP();
 
 -- Massive scan-heavy UPDATE with complex analytics across all tables (millions of rows)
@@ -329,12 +351,13 @@ SELECT
     CURRENT_DATE(),
     'Massive scan-heavy UPDATE with complex analytics across all tables - Gen1';
 
--- Gen2 Complex Update Test (clear cache for fresh comparison)
-ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
+-- Gen2 Complex Update Test (disable caching for fresh comparison)
 USE WAREHOUSE TEST_GEN2_MEDIUM;
 
--- Cache busting query
-SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.ORDERS WHERE O_ORDERKEY < 0;  -- Force fresh execution plan
+-- Disable all caching for accurate Gen2 performance measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen2_update = 'GEN2_COMPLEX_UPDATE_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen2_update;
 
 SET start_time = CURRENT_TIMESTAMP();
 
@@ -418,6 +441,12 @@ SELECT
 
 -- Gen1 Large Delete Test
 USE WAREHOUSE TEST_GEN1_MEDIUM;
+
+-- Disable all caching for accurate Gen1 baseline measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen1_delete = 'GEN1_LARGE_DELETE_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen1_delete;
+
 SET start_time = CURRENT_TIMESTAMP();
 
 -- Analytical DELETE with complex scan-heavy conditions across all tables
@@ -462,12 +491,13 @@ SELECT
     CURRENT_DATE(),
     'Analytical DELETE with complex scan-heavy conditions across all tables - Gen1';
 
--- Gen2 Large Delete Test (clear cache for fresh comparison)
-ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
+-- Gen2 Large Delete Test (disable caching for fresh comparison)
 USE WAREHOUSE TEST_GEN2_MEDIUM;
 
--- Cache busting query
-SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.LINEITEM WHERE L_ORDERKEY < 0;  -- Force fresh execution plan
+-- Disable all caching for accurate Gen2 performance measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen2_delete = 'GEN2_LARGE_DELETE_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen2_delete;
 
 SET start_time = CURRENT_TIMESTAMP();
 
@@ -519,6 +549,12 @@ SELECT
 
 -- Gen1 Analytics Test
 USE WAREHOUSE TEST_GEN1_MEDIUM;
+
+-- Disable all caching for accurate Gen1 baseline measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen1_analytics = 'GEN1_ANALYTICS_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen1_analytics;
+
 SET start_time = CURRENT_TIMESTAMP();
 
 -- Complex customer segmentation query
@@ -563,12 +599,13 @@ SELECT
     CURRENT_DATE(),
     'Complex customer segmentation analytics - Gen1';
 
--- Gen2 Analytics Test (clear cache for fresh comparison)
-ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
+-- Gen2 Analytics Test (disable caching for fresh comparison)
 USE WAREHOUSE TEST_GEN2_MEDIUM;
 
--- Cache busting query
-SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.CUSTOMER WHERE C_CUSTKEY < 0;  -- Force fresh execution plan
+-- Disable all caching for accurate Gen2 performance measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen2_analytics = 'GEN2_ANALYTICS_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen2_analytics;
 
 SET start_time = CURRENT_TIMESTAMP();
 
@@ -620,6 +657,12 @@ SELECT
 
 -- Gen1 Large Aggregation Test
 USE WAREHOUSE TEST_GEN1_MEDIUM;
+
+-- Disable all caching for accurate Gen1 baseline measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen1_agg = 'GEN1_AGGREGATION_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen1_agg;
+
 SET start_time = CURRENT_TIMESTAMP();
 
 -- Large aggregation with multiple joins
@@ -656,12 +699,13 @@ SELECT
     CURRENT_DATE(),
     'Large aggregation with multi-table joins - Gen1';
 
--- Gen2 Large Aggregation Test (clear cache for fresh comparison)
-ALTER WAREHOUSE TEST_GEN1_MEDIUM SUSPEND;
+-- Gen2 Large Aggregation Test (disable caching for fresh comparison)
 USE WAREHOUSE TEST_GEN2_MEDIUM;
 
--- Cache busting query  
-SELECT COUNT(*) FROM GEN2_BENCHMARK_TEST.TESTING.ORDERS WHERE O_ORDERKEY < 0;  -- Force fresh execution plan
+-- Disable all caching for accurate Gen2 performance measurement
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+SET query_tag_gen2_agg = 'GEN2_AGGREGATION_NO_CACHE_' || CURRENT_TIMESTAMP()::STRING;
+ALTER SESSION SET QUERY_TAG = $query_tag_gen2_agg;
 
 SET start_time = CURRENT_TIMESTAMP();
 
@@ -1035,36 +1079,3 @@ WHERE test_date = CURRENT_DATE() AND warehouse_name LIKE '%GEN2%' AND credits_co
 4. Overall Summary:
 [Run the "Gen2 vs Gen1 Overall Comparison" query above]
 */
--- Calculate improvement percentages
-WITH gen_comparison AS (
-    SELECT 
-        query_name,
-        MAX(CASE WHEN warehouse_generation = 'GEN1' THEN execution_time_seconds END) AS gen1_time,
-        MAX(CASE WHEN warehouse_generation = 'GEN2' THEN execution_time_seconds END) AS gen2_time,
-        MAX(CASE WHEN warehouse_generation = 'GEN1' THEN credits_consumed END) AS gen1_credits,
-        MAX(CASE WHEN warehouse_generation = 'GEN2' THEN credits_consumed END) AS gen2_credits
-    FROM TEST_GEN2.SCHEMA_GEN2.PERFORMANCE_TEST_RESULTS
-    WHERE test_date = CURRENT_DATE()
-    GROUP BY query_name
-)
-SELECT 
-    query_name,
-    gen1_time,
-    gen2_time,
-    ROUND(((gen1_time - gen2_time) / NULLIF(gen1_time, 0) * 100), 1) AS speed_improvement_pct,
-    ROUND(gen1_credits, 6) AS gen1_credits,
-    ROUND(gen2_credits, 6) AS gen2_credits,
-    ROUND(((gen1_credits - gen2_credits) / NULLIF(gen1_credits, 0) * 100), 1) AS cost_reduction_pct,
-    CASE 
-        WHEN gen2_time < gen1_time THEN '✅ Gen2 Faster'
-        WHEN gen2_time > gen1_time THEN '❌ Gen1 Faster'
-        ELSE '🔄 Same Speed'
-    END AS performance_winner,
-    CASE 
-        WHEN gen2_credits < gen1_credits THEN '✅ Gen2 Cheaper'
-        WHEN gen2_credits > gen1_credits THEN '❌ Gen1 Cheaper'
-        ELSE '🔄 Same Cost'
-    END AS cost_winner
-FROM gen_comparison
-WHERE gen1_time IS NOT NULL AND gen2_time IS NOT NULL
-ORDER BY speed_improvement_pct DESC;
